@@ -1,0 +1,34 @@
+name: Synthetic compatibility fixture
+on:
+  workflow_call:
+    outputs:
+      verified_sha:
+        value: ${{ jobs.fixture.outputs.verified_sha }}
+      verified_at:
+        value: ${{ jobs.fixture.outputs.verified_at }}
+permissions:
+  contents: read
+jobs:
+  fixture:
+    name: Synthetic compatibility fixture
+    env:
+      REHEARSAL_CASE: ${{ github.event.inputs.scenario }}
+    environment: compatibility-reviewed
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      verified_sha: ${{ steps.emit.outputs.verified_sha }}
+      verified_at: ${{ steps.emit.outputs.verified_at }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Validate synthetic context
+        run: node .github/scripts/rehearsal-fixture.cjs guard
+      - id: emit
+        name: Emit synthetic result
+        run: node .github/scripts/rehearsal-fixture.cjs emit

@@ -1,0 +1,114 @@
+name: Release
+run-name: Synthetic release (${{ inputs.scenario }})
+
+# Dispatch from main; tag restrictions must also block historical workflows.
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        type: choice
+        required: true
+        default: good
+        options: [good, failure, missing-evidence, changed-candidate, stale-evidence, cancelled, timeout]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  sandbox:
+    env:
+      REHEARSAL_CASE: ${{ github.event.inputs.scenario }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - run: node .github/scripts/rehearsal-fixture.cjs guard
+  preflight:
+    needs: sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Validate publisher protection before requesting secrets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node .github/scripts/shipping-policy.cjs prepare
+          gh api "repos/$GITHUB_REPOSITORY/environments/release-publisher" > "$RUNNER_TEMP/publisher.json"
+          gh api "repos/$GITHUB_REPOSITORY/environments/release-publisher/deployment-branch-policies?per_page=100" > "$RUNNER_TEMP/publisher-branches.json"
+          node .github/scripts/shipping-policy.cjs environment "$RUNNER_TEMP/publisher.json" "$RUNNER_TEMP/publisher-branches.json" release-publisher
+  compatibility:
+    needs: preflight
+    uses: ./.github/workflows/compatibility.yml
+  publish:
+    name: Publish verified main candidate
+    needs: compatibility
+    if: needs.compatibility.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-publisher
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Recheck exact candidate before publication
+        id: release
+        env:
+          VERIFIED_SHA: ${{ needs.compatibility.outputs.verified_sha }}
+          VERIFIED_AT: ${{ needs.compatibility.outputs.verified_at }}
+        run: node .github/scripts/shipping-policy.cjs publish
+      - name: Package verified commit
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="skillmeter-codex-marketplace-${RELEASE_TAG}/" -o "dist/skillmeter-codex-marketplace-${RELEASE_TAG}.tar.gz" "$GITHUB_SHA"
+      - name: Create repository-scoped publisher token
+        id: publisher
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Create immutable tag and release
+        env:
+          GH_TOKEN: ${{ steps.publisher.outputs.token }}
+          VERIFIED_SHA: ${{ needs.compatibility.outputs.verified_sha }}
+          VERIFIED_AT: ${{ needs.compatibility.outputs.verified_at }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          TAG_EXISTS: ${{ steps.release.outputs.existing }}
+        run: |
+          node .github/scripts/shipping-policy.cjs publish
+          if [ "$TAG_EXISTS" != true ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA"
+          fi
+          node .github/scripts/shipping-policy.cjs publish
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release-already-exists-review-required" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --title "SkillMeter ${RELEASE_TAG#v}" --generate-notes --verify-tag "dist/skillmeter-codex-marketplace-${RELEASE_TAG}.tar.gz"
