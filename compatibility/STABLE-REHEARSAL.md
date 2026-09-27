@@ -6,7 +6,7 @@ setup or authorize changes to the real marketplace. Keep all existing review,
 queue and environment protections.
 
 Policy and tests are copied unchanged from Codex marketplace PR103 commit
-`e9f3acd53b9b78002f6cf446fb12b7764d0c19a9`. The promotion workflow adds only
+`eae4709bf144b2459a33dc2b9c2b04087256b6e0`. The promotion workflow adds only
 sandbox repository/fixture guards. Refresh these copies if the reviewed source
 changes. The new PR check executes policy tests; its success is not proof of
 GitHub ref enforcement. The optional local Codex install test is skipped in
@@ -19,6 +19,13 @@ hosted CI because no Codex CLI is provisioned.
   remain limited to this repository; no production or developer credentials.
 - `release-publisher` environment contains its App ID and key, requires independent
   approval, prevents self-review/admin bypass and allows only `main`.
+- A maintainer must approve and set `STABLE_PROMOTION_CODE_SHA` to a reviewed
+  full sandbox commit containing this helper and guard. Protected promotion
+  checks out that fixed revision, independently from the release candidate.
+- A separately reviewed `RULESET_AUDIT_TOKEN` must expose complete bypass metadata
+  for this repository. It is used only for ruleset GET requests. Missing fields
+  or credentials stop promotion. Do not expand the publisher App's permissions;
+  this additional inspection credential is an unresolved activation gate.
 - Add the two stable rulesets rendered by
   `node .github/scripts/stable-channel.cjs rules APP_ID`. Use the real sandbox
   App ID. Preserve existing main/queue/tag rules, including immutable tags.
@@ -35,8 +42,8 @@ credentials, private data or real telemetry in receipts.
 |---|---|---|
 | First promotion | Dispatch Promote stable with published tag/SHA, successful release run, reviewed synthetic evidence link and expected_stable=absent | Environment waits for independent approval; stable becomes exactly that release SHA |
 | Unreleased main | Land another reviewed synthetic candidate; do not promote | stable remains unchanged |
-| Missing/failed/mismatched evidence | Dispatch using missing release, failed run or a different tested SHA | Failure before ref mutation; stable unchanged |
-| Stale old-ref input | Dispatch a valid release with the wrong expected_stable | Failure before mutation |
+| Missing/failed/mismatched evidence | Dispatch using missing release, failed run or a different tested SHA | Preflight fails before environment approval or serialized promotion; stable unchanged |
+| Stale old-ref input | Dispatch a valid release with the wrong expected_stable | Preflight fails before environment approval or serialized promotion |
 | Wrong branch | Attempt promotion dispatch from a non-main branch | Promotion job cannot execute |
 | Older release | After promoting a greater version, attempt the older release | Failure; stable never moves backward |
 | Concurrent promotion | Queue two valid promotions with the same expected old SHA | Serialized execution; at most one advances, the other holds on changed stable |
